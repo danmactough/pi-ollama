@@ -48,5 +48,8 @@
   "bugs": {
     "url": "https://github.com/0xKobold/pi-ollama/issues"
   },
-  "homepage": "https://github.com/0xKobold/pi-ollama#readme"
+  "homepage": "https://github.com/0xKobold/pi-ollama#readme",
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
 }
