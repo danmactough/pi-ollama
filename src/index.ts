@@ -5,52 +5,19 @@
  * https://github.com/ollama/ollama-js
  */
 
-import type { ExtensionAPI, ProviderModelConfig } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import {
-  DEFAULT_CONFIG,
   createClients,
   isLocalRunning,
+  fetchLocalModels,
+  fetchCloudModels,
   fetchModelDetails,
   getContextLength,
   hasVisionCapability,
-  hasReasoningCapability,
-  loadConfigFromEnv,
-  loadConfigFromSettingsFiles,
-  type OllamaConfig,
-  type OllamaClients,
+  loadConfig,
   type OllamaExtensionState,
   type ModelDetails,
 } from './shared.js';
-
-// ============================================================================
-// LOGGING
-// ============================================================================
-
-const log = {
-  info: (msg: string, ...args: any[]) => console.log(`[pi-ollama] ${msg}`, ...args),
-  debug: (msg: string, ...args: any[]) => console.debug(`[pi-ollama] ${msg}`, ...args),
-  warn: (msg: string, ...args: any[]) => console.warn(`[pi-ollama] ${msg}`, ...args),
-  error: (msg: string, ...args: any[]) => console.error(`[pi-ollama] ${msg}`, ...args),
-};
-
-// Re-export utilities the tests rely on
-export {
-  fetchModelDetails,
-  getContextLength,
-  hasVisionCapability,
-  hasReasoningCapability,
-} from './shared.js';
-
-// ============================================================================
-// TYPES
-// ============================================================================
-
-interface ExtensionContext {
-  ui?: {
-    notify?: (message: string, type?: 'info' | 'error' | 'warning') => void;
-  };
-  pi?: ExtensionAPI;
-}
 
 // ============================================================================
 // STATE MANAGEMENT
@@ -59,111 +26,26 @@ interface ExtensionContext {
 /**
  * Initializes the extension state from pi settings and environment variables.
  */
-function initializeState(pi: ExtensionAPI): OllamaExtensionState {
-  let config = { ...DEFAULT_CONFIG };
-
-  // Use standardized keys: pi-ollama.baseUrl, pi-ollama.cloudUrl, pi-ollama.apiKey
-  const settings = (pi as any).settings;
-  if (settings?.get) {
-    config.baseUrl = settings.get("pi-ollama.baseUrl") ?? config.baseUrl;
-    config.cloudUrl = settings.get("pi-ollama.cloudUrl") ?? config.cloudUrl;
-    config.apiKey = settings.get("pi-ollama.apiKey") ?? config.apiKey;
-  } else {
-    // Fallback: read from settings files directly
-    const fileConfig = loadConfigFromSettingsFiles();
-    if (fileConfig.baseUrl) config.baseUrl = fileConfig.baseUrl;
-    if (fileConfig.cloudUrl) config.cloudUrl = fileConfig.cloudUrl;
-    if (fileConfig.apiKey) config.apiKey = fileConfig.apiKey;
-  }
-
-  // Environment override (highest priority)
-  const envConfig = loadConfigFromEnv();
-  config = { ...config, ...envConfig };
-
+function initializeState(): OllamaExtensionState {
+  const config = loadConfig();
   const clients = createClients(config);
-  
-  log.info(`State initialized: baseUrl=${config.baseUrl}, cloudUrl=${config.cloudUrl}, hasApiKey=${!!config.apiKey}`);
-  
   return { config, clients };
-}
-
-// ============================================================================
-// MODEL CREATION
-// ============================================================================
-
-function createModel(name: string, isCloud: boolean, details?: ModelDetails): ProviderModelConfig {
-  const contextWindow = getContextLength(details || null, name);
-  const isVision = details ? hasVisionCapability(details) : false;
-  const isReasoning = hasReasoningCapability(name);
-
-  const cloudEmoji = isCloud ? '☁️ ' : '';
-  const visionEmoji = isVision ? '👁️ ' : '';
-
-  return {
-    id: isCloud ? `${name}:cloud` : name,
-    name: `${cloudEmoji}${visionEmoji}${name}`,
-    api: 'openai-completions',
-    reasoning: isReasoning,
-    input: isVision ? ['text', 'image'] : ['text'],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow,
-    maxTokens: 8192,
-  };
-}
-
-// ============================================================================
-// FETCH MODELS
-// ============================================================================
-
-async function fetchLocalModels(state: OllamaExtensionState): Promise<ProviderModelConfig[]> {
-  const { clients } = state;
-  try {
-    const response = await clients.local.list();
-    const models = response.models || [];
-
-    const result: ProviderModelConfig[] = [];
-    for (const m of models) {
-      const details = await fetchModelDetails(clients.local, m.name);
-      result.push(createModel(m.name, false, details || undefined));
-    }
-    return result;
-  } catch (err) {
-    log.debug(`Error fetching local models: ${err}`);
-    return [];
-  }
-}
-
-const DEFAULT_CLOUD_MODELS = [
-  'kimi-k2.5', 'llama3.3', 'qwen2.5', 'mistral', 'codellama', 'deepseek-r1', 'gemma2',
-];
-
-async function fetchCloudModels(state: OllamaExtensionState): Promise<ProviderModelConfig[]> {
-  const { clients } = state;
-  if (clients.cloud) {
-    try {
-      const response = await clients.cloud.list();
-      const models = response.models || [];
-      return models.map((m: any) => createModel(m.name, true));
-    } catch (err) {
-      log.debug(`Error fetching cloud models, using defaults: ${err}`);
-    }
-  }
-  return DEFAULT_CLOUD_MODELS.map(name => createModel(name, true));
 }
 
 // ============================================================================
 // COMMANDS
 // ============================================================================
 
-async function handleStatus(state: OllamaExtensionState, ctx: ExtensionContext) {
+async function handleStatus(state: OllamaExtensionState, ctx: ExtensionCommandContext) {
   const { clients, config } = state;
   const hasLocal = await isLocalRunning(clients.local);
+  const hasCloudKey = !!(config.cloudApiKey || config.apiKey);
 
   const lines = [
     '🦙 Ollama Status',
     '',
     `Local: ${hasLocal ? '✅ Connected' : '❌ Not running'}`,
-    `Cloud: ${config.apiKey ? '✅ API key set' : '❌ No API key'}`,
+    `Cloud: ${hasCloudKey ? '✅ API key set' : '❌ No API key'}`,
     '',
     `Base URL: ${config.baseUrl}`,
     `Cloud URL: ${config.cloudUrl}`,
@@ -171,7 +53,7 @@ async function handleStatus(state: OllamaExtensionState, ctx: ExtensionContext) 
   ctx.ui?.notify?.(lines.join('\n'), 'info');
 }
 
-async function handleModelInfo(state: OllamaExtensionState, args: string, ctx: ExtensionContext) {
+async function handleModelInfo(state: OllamaExtensionState, args: string, ctx: ExtensionCommandContext) {
   const modelName = args.trim();
   if (!modelName) {
     ctx.ui?.notify?.('Usage: /ollama-info MODEL_NAME', 'error');
@@ -214,54 +96,58 @@ async function handleModelInfo(state: OllamaExtensionState, args: string, ctx: E
   ctx.ui?.notify?.(lines.join('\n'), 'info');
 }
 
-async function handleModels(pi: ExtensionAPI, state: OllamaExtensionState, ctx: ExtensionContext) {
-  const [localModels, cloudModels] = await Promise.all([fetchLocalModels(state), fetchCloudModels(state)]);
+async function handleModels(pi: ExtensionAPI, state: OllamaExtensionState, ctx?: ExtensionCommandContext) {
+  const [localModelsResult, cloudModelsResult] = await Promise.allSettled([fetchLocalModels(state), fetchCloudModels(state)]);
+
+  const localModels = localModelsResult.status === 'fulfilled' ? localModelsResult.value : [];
+  const cloudModels = cloudModelsResult.status === 'fulfilled' ? cloudModelsResult.value : [];
+  if (localModelsResult.status === 'rejected') {
+    ctx?.ui.notify(`Failed to fetch local models: ${localModelsResult.reason}`, 'error');
+  }
+  if (cloudModelsResult.status === 'rejected') {
+    ctx?.ui.notify(`Failed to fetch cloud models: ${cloudModelsResult.reason}`, 'error');
+  }
+  // Remove local models that are actually cloud models
+  const cloudModelIds = new Set(cloudModels.map(m => m.id));
+  const uniqueLocalModels = localModels.filter(lm => {
+    const modelId = lm.id.replace(/[^A-Za-z0-9.]cloud$/, '');
+    return !cloudModelIds.has(modelId);
+  }); 
 
   const lines = ['🦙 Available Models', ''];
-  if (localModels.length > 0) {
+  if (uniqueLocalModels.length > 0) {
     lines.push('📍 Local:');
-    localModels.forEach(m => {
-      const vision = m.input?.includes('image') ? '👁️' : '';
-      lines.push(`  ${vision} ${m.name} (${m.contextWindow.toLocaleString()} ctx)`);
+    uniqueLocalModels.forEach(m => {
+      lines.push(`  ${m.name} (${m.contextWindow.toLocaleString()} ctx)`);
     });
     lines.push('');
   }
   if (cloudModels.length > 0) {
     lines.push('☁️ Cloud:');
     cloudModels.forEach(m => {
-      const vision = m.input?.includes('image') ? '👁️' : '';
-      lines.push(`  ${vision} ${m.name} (${m.contextWindow.toLocaleString()} ctx)`);
+      lines.push(`  ${m.name} (${m.contextWindow.toLocaleString()} ctx)`);
     });
   }
-  if (localModels.length === 0 && cloudModels.length === 0) {
+  if (uniqueLocalModels.length === 0 && cloudModels.length === 0) {
     lines.push('No models found. Ensure Ollama is running locally or set API key for cloud.');
   }
-  ctx.ui?.notify?.(lines.join('\n'), 'info');
+  ctx?.ui?.notify?.(lines.join('\n'), 'info');
 
-  const localModelIds = new Set(localModels.map(m => m.id.replace(':cloud', '')));
-  const uniqueCloudModels = cloudModels.filter(m => !localModelIds.has(m.id.replace(':cloud', '')));
-
-  if (localModels.length > 0) {
-    try {
-      pi.registerProvider('ollama', {
-        baseUrl: `${state.config.baseUrl}/v1`,
-        apiKey: 'ollama',
-        api: 'openai-completions',
-        models: localModels,
-      });
-    } catch (err) {
-      log.error(`Failed to register provider:`, err);
-    }
+  if (uniqueLocalModels.length > 0) {
+    pi.registerProvider('ollama', {
+      baseUrl: `${state.config.baseUrl}/v1`,
+      apiKey: 'ollama',
+      api: 'openai-completions',
+      models: uniqueLocalModels,
+    });
   }
 
-  if (uniqueCloudModels.length > 0 && state.clients.cloud) {
-    const cloudBase = state.config.cloudUrl.replace(/\/+\$/, '');
-    const cloudBaseUrl = cloudBase.endsWith('/v1') ? cloudBase : `${cloudBase}/v1`;
+  if (cloudModels.length > 0 && state.clients.cloud) {
     pi.registerProvider('ollama-cloud', {
-      baseUrl: cloudBaseUrl,
-      apiKey: state.config.apiKey,
+      baseUrl: `${state.config.cloudUrl}/v1`,
+      apiKey: state.config.cloudApiKey || state.config.apiKey,
       api: 'openai-completions',
-      models: uniqueCloudModels,
+      models: cloudModels,
     });
   }
 }
@@ -271,34 +157,40 @@ async function handleModels(pi: ExtensionAPI, state: OllamaExtensionState, ctx: 
 // ============================================================================
 
 export default async function ollamaExtension(pi: ExtensionAPI) {
-  const state = initializeState(pi);
+  const state = initializeState();
 
   pi.registerCommand('ollama-status', {
     description: 'Check Ollama connection status',
-    handler: async (_args: string, ctx: any) => handleStatus(state, ctx as ExtensionContext),
+    handler: async (_args: string, ctx: ExtensionCommandContext) => handleStatus(state, ctx),
   });
 
   pi.registerCommand('ollama-info', {
     description: 'Show model details',
-    handler: async (args: string, ctx: any) => handleModelInfo(state, args, ctx as ExtensionContext),
+    handler: async (args: string, ctx: ExtensionCommandContext) => handleModelInfo(state, args, ctx),
   });
 
   pi.registerCommand('ollama-models', {
     description: 'List available models',
-    handler: async (_args: string, ctx: any) => handleModels(pi, state, ctx as ExtensionContext),
+    handler: async (_args: string, ctx: ExtensionCommandContext) => handleModels(pi, state, ctx),
   });
 
   pi.registerCommand('ollama', {
     description: 'Ollama management',
-    handler: async (args: string, ctx: any) => {
-      const context = ctx as ExtensionContext;
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
       const [sub] = args.trim().split(/\s+/);
       switch (sub) {
-        case 'status': return handleStatus(state, context);
-        case 'info': return handleModelInfo(state, args.slice(4).trim(), context);
-        case 'models': return handleModels(pi, state, context);
+        case 'status': return handleStatus(state, ctx);
+        case 'info': {
+          const modelName = args.slice(4).trim();
+          if (!modelName) {
+            ctx.ui?.notify?.('Usage: /ollama info MODEL_NAME', 'error');
+            return;
+          }
+          return handleModelInfo(state, modelName, ctx);
+        }
+        case 'models': return handleModels(pi, state, ctx);
         default:
-          context.ui?.notify?.([
+          ctx.ui?.notify?.([
             '🦙 Ollama Commands',
             '',
             '/ollama status  - Check connection',
@@ -310,10 +202,8 @@ export default async function ollamaExtension(pi: ExtensionAPI) {
   });
 
   try {
-    await handleModels(pi, state, { ui: { notify: () => { } } });
+    await handleModels(pi, state);
   } catch (err) {
-    log.error(`Error during initial model fetch:`, err);
+    console.error(`[pi-ollama] Error during initial model fetch:`, err);
   }
-
-  log.info('Extension loaded');
 }

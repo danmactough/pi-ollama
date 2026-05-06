@@ -6,33 +6,26 @@
  */
 
 import { Ollama } from 'ollama';
-import { Type, Static } from '@sinclair/typebox';
+import { getAgentDir, ProviderModelConfig } from '@mariozechner/pi-coding-agent';
+import fs from 'node:fs';
+import path from 'node:path';
 
-// ============================================================================
-// SCHEMAS
-// ============================================================================
+export interface OllamaConfig {
+  baseUrl: string;
+  cloudUrl: string;
+  apiKey: string;
+  cloudApiKey: string;
+}
 
-export const OllamaConfigSchema = Type.Object({
-  baseUrl: Type.String({ default: "http://localhost:11434" }),
-  cloudUrl: Type.String({ default: "https://ollama.com" }),
-  apiKey: Type.String({ default: "" }),
-});
+export interface OllamaClients {
+  local: Ollama;
+  cloud: Ollama | null;
+}
 
-export type OllamaConfig = Static<typeof OllamaConfigSchema>;
-
-export const OllamaClientsSchema = Type.Object({
-  local: Type.Any(), // Ollama client instance
-  cloud: Type.Optional(Type.Any()),
-});
-
-export type OllamaClients = Static<typeof OllamaClientsSchema>;
-
-export const OllamaExtensionStateSchema = Type.Object({
-  config: OllamaConfigSchema,
-  clients: OllamaClientsSchema,
-});
-
-export type OllamaExtensionState = Static<typeof OllamaExtensionStateSchema>;
+export interface OllamaExtensionState {
+  config: OllamaConfig;
+  clients: OllamaClients;
+}
 
 export interface ModelDetails {
   model_info?: {
@@ -52,26 +45,83 @@ export interface ModelDetails {
   families?: string[];
 }
 
-export interface ListedModel {
-  name: string;
-  size?: number;
-  modified_at?: string;
-  digest?: string;
-  details?: {
-    parameter_size?: string;
-    family?: string;
-    families?: string[];
-    variant?: string;
-    quantization_level?: string;
-  };
-}
-
 // Default configuration values
 export const DEFAULT_CONFIG: OllamaConfig = {
   baseUrl: "http://localhost:11434",
   cloudUrl: "https://ollama.com",
   apiKey: "",
+  cloudApiKey: "",
 };
+
+/**
+ * Create Ollama clients from config.
+ */
+export function createClients(config: OllamaConfig): OllamaClients {
+  const localClient = new Ollama({ host: config.baseUrl });
+  const cloudKey = config.cloudApiKey || config.apiKey;
+  const cloudClient = cloudKey
+    ? new Ollama({ host: config.cloudUrl, headers: { Authorization: `Bearer ${cloudKey}` } })
+    : null;
+  
+  return { local: localClient, cloud: cloudClient };
+}
+
+// ============================================================================
+// FETCH MODELS
+// ============================================================================
+
+export async function fetchLocalModels(state: OllamaExtensionState): Promise<ProviderModelConfig[]> {
+  const { clients } = state;
+  const response = await clients.local.list();
+  const models = response.models || [];
+
+  const result: ProviderModelConfig[] = [];
+  for (const m of models) {
+    const details = await fetchModelDetails(clients.local, m.name);
+    result.push(createModelConfig(m.name, false, details || undefined));
+  }
+  return result;
+}
+
+export async function fetchCloudModels(state: OllamaExtensionState): Promise<ProviderModelConfig[]> {
+  const { clients } = state;
+  if (clients.cloud) {
+    const response = await clients.cloud.list();
+    const models = response.models || [];
+
+    const result: ProviderModelConfig[] = [];
+    for (const m of models) {
+      const details = await fetchModelDetails(clients.cloud, m.name);
+      result.push(createModelConfig(m.name, true, details || undefined));
+    }
+    return result;
+  }
+  return [];
+}
+
+// ============================================================================
+// MODEL CREATION
+// ============================================================================
+
+function createModelConfig(name: string, isCloud: boolean, details?: ModelDetails): ProviderModelConfig {
+  const contextWindow = getContextLength(details || null, name);
+  const isVision = details ? hasVisionCapability(details) : false;
+  const isReasoning = hasReasoningCapability(name);
+
+  const cloudEmoji = isCloud ? '☁️ ' : '';
+  const visionEmoji = isVision ? '👁️ ' : '';
+
+  return {
+    id: name,
+    name: `${cloudEmoji}${visionEmoji}${name}`,
+    api: 'openai-completions',
+    reasoning: isReasoning,
+    input: isVision ? ['text', 'image'] : ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow,
+    maxTokens: 8192,
+  };
+}
 
 // ============================================================================
 // CONFIGURATION HELPERS
@@ -82,74 +132,89 @@ export const DEFAULT_CONFIG: OllamaConfig = {
  */
 export function loadConfigFromEnv(): Partial<OllamaConfig> {
   const config: Partial<OllamaConfig> = {};
-  
+
   if (process.env.OLLAMA_HOST) {
-    config.baseUrl = process.env.OLLAMA_HOST;
+    config.baseUrl = formatBaseUrl(process.env.OLLAMA_HOST);
   }
   if (process.env.OLLAMA_HOST_CLOUD) {
-    config.cloudUrl = process.env.OLLAMA_HOST_CLOUD;
+    config.cloudUrl = formatBaseUrl(process.env.OLLAMA_HOST_CLOUD);
   }
   if (process.env.OLLAMA_API_KEY) {
     config.apiKey = process.env.OLLAMA_API_KEY;
   }
-  
+  if (process.env.OLLAMA_API_KEY_CLOUD) {
+    config.cloudApiKey = process.env.OLLAMA_API_KEY_CLOUD;
+  }
+
   return config;
 }
 
 /**
- * Load config from pi settings files.
- * Project settings override global settings when present.
+ * Load config from pi's models.json.
+ * Reads provider entries under `providers.ollama` and `providers.ollama-cloud`.
  */
-export function loadConfigFromSettingsFiles(): Partial<OllamaConfig> {
-  if (typeof process === 'undefined') return {};
+export function loadConfigFromModelsJson(): Partial<OllamaConfig> {
+  const config: Partial<OllamaConfig> = {};
 
-  const fs = require('node:fs') as typeof import('node:fs');
-  const os = require('node:os') as typeof import('node:os');
-  const path = require('node:path') as typeof import('node:path');
+  try {
+    const agentDir = process.env.PI_CODING_AGENT_DIR
+      ? path.resolve(process.env.PI_CODING_AGENT_DIR)
+      : getAgentDir();
+    const modelsPath = path.join(agentDir, 'models.json');
 
-  const readSettings = (filePath: string): Record<string, any> => {
-    try {
-      if (!fs.existsSync(filePath)) return {};
-      const raw = fs.readFileSync(filePath, 'utf8');
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch {
-      return {};
+    if (!fs.existsSync(modelsPath)) return config;
+    const raw = fs.readFileSync(modelsPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !parsed.providers) return config;
+
+    const localProvider = parsed.providers.ollama;
+    const cloudProvider = parsed.providers['ollama-cloud'];
+
+    if (localProvider && typeof localProvider === 'object') {
+      if (typeof localProvider.baseUrl === 'string') config.baseUrl = formatBaseUrl(localProvider.baseUrl);
+      if (typeof localProvider.apiKey === 'string') config.apiKey = localProvider.apiKey;
     }
-  };
 
-  const globalSettingsPath = path.join(os.homedir(), '.pi', 'agent', 'settings.json');
-  const projectSettingsPath = path.join(process.cwd(), '.pi', 'settings.json');
+    if (cloudProvider && typeof cloudProvider === 'object') {
+      if (typeof cloudProvider.baseUrl === 'string') config.cloudUrl = formatBaseUrl(cloudProvider.baseUrl);
+      if (typeof cloudProvider.apiKey === 'string') config.cloudApiKey = cloudProvider.apiKey;
+    }
+  } catch {
+    // ignore read/parse errors
+  }
 
-  const globalSettings = readSettings(globalSettingsPath);
-  const projectSettings = readSettings(projectSettingsPath);
-
-  const globalOllama = globalSettings.ollama && typeof globalSettings.ollama === 'object' ? globalSettings.ollama : {};
-  const projectOllama = projectSettings.ollama && typeof projectSettings.ollama === 'object' ? projectSettings.ollama : {};
-  const merged = { ...globalOllama, ...projectOllama };
-
-  return {
-    baseUrl: typeof merged.baseUrl === 'string' ? merged.baseUrl : undefined,
-    cloudUrl: typeof merged.cloudUrl === 'string' ? merged.cloudUrl : undefined,
-    apiKey: typeof merged.apiKey === 'string' ? merged.apiKey : undefined,
-  };
+  return config;
 }
 
-/**
- * Create Ollama clients from config.
- */
-export function createClients(config: OllamaConfig): OllamaClients {
-  const localClient = new Ollama({ host: config.baseUrl });
-  const cloudClient = config.apiKey
-    ? new Ollama({ host: config.cloudUrl, headers: { Authorization: `Bearer ${config.apiKey}` } })
-    : null;
-  
-  return { local: localClient, cloud: cloudClient };
-}
+export function loadConfig(): OllamaConfig {
+  let config = { ...DEFAULT_CONFIG };
 
+  const fileConfig = loadConfigFromModelsJson();
+  if (fileConfig.baseUrl) config.baseUrl = fileConfig.baseUrl;
+  if (fileConfig.cloudUrl) config.cloudUrl = fileConfig.cloudUrl;
+  if (fileConfig.apiKey) config.apiKey = fileConfig.apiKey;
+
+  // Environment override (highest priority)
+  const envConfig = loadConfigFromEnv();
+  config = { ...config, ...envConfig };
+  return config;
+}
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================
+
+/**
+ * Formats a base URL by removing trailing slashes and v1 suffix.
+ * @param url 
+ * @returns Formatted URL
+ */
+function formatBaseUrl(url: string): string {
+  url = url.replace(/\/+$/, '');
+  if (url.endsWith('/v1')) {
+    url = url.slice(0, -3);
+  }
+  return url;
+}
 
 /**
  * Check if local Ollama is running by attempting to list models.
@@ -162,27 +227,6 @@ export async function isLocalRunning(client: Ollama): Promise<boolean> {
     console.debug(`[pi-ollama] Local Ollama is not reachable: ${err}`);
     return false;
   }
-}
-
-/**
- * Get appropriate client for a model (local if available, else cloud).
- */
-export function getClientForModel(modelName: string, clients: OllamaClients): Ollama | null {
-  if (modelName.includes(':cloud') && clients.cloud) {
-    return clients.cloud;
-  }
-  return clients.local ?? null;
-}
-
-export function getModelName(model: string): string {
-  return model.replace(':cloud', '');
-}
-
-export function stripProviderPrefix(model: string): string {
-  if (model.includes('/')) {
-    return model.split('/')[1];
-  }
-  return model;
 }
 
 /**
@@ -276,158 +320,4 @@ export function hasReasoningCapability(modelName: string): boolean {
          lowerName.includes('chat') || lowerName.includes('coder') || lowerName.includes('code') || 
          lowerName.includes('deepseek') || lowerName.includes('kimi') || lowerName.includes('phi') || 
          lowerName.includes('qwq');
-}
-
-export async function listAllModels(state: OllamaExtensionState): Promise<Array<ModelDetails & { name: string }>> {
-  const allModels: Array<ModelDetails & { name: string }> = [];
-  const { clients, config } = state;
-  
-  try {
-    if (clients.local) {
-      try {
-        const localResponse = await clients.local.list();
-        const localModels = localResponse.models || [];
-        for (const model of localModels) {
-          allModels.push({ ...model, name: model.name } as ModelDetails & { name: string });
-        }
-      } catch (err) {
-        console.warn('[shared] Failed to list local models:', err);
-      }
-    }
-    
-    if (clients.cloud && config.apiKey) {
-      try {
-        const cloudResponse = await clients.cloud.list();
-        const cloudModels = cloudResponse.models || [];
-        for (const model of cloudModels) {
-          const existsLocally = allModels.some(m => m.name === model.name && !model.name.includes(':cloud'));
-          if (!existsLocally) {
-            allModels.push({ ...model, name: model.name } as ModelDetails & { name: string });
-          }
-        }
-      } catch (err) {
-        console.warn('[shared] Failed to list cloud models:', err);
-      }
-    }
-  } catch (err) {
-    console.error('[shared] Error listing models:', err);
-  }
-  
-  return allModels;
-}
-
-// ============================================================================
-// CHAT UTILITIES
-// ============================================================================
-
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
-}
-
-export interface ChatOptions {
-  model: string;
-  messages: ChatMessage[];
-  temperature?: number;
-  maxTokens?: number;
-  stream?: boolean;
-  signal?: AbortSignal;
-}
-
-export interface ChatUsage {
-  inputTokens: number;
-  outputTokens: number;
-}
-
-export interface ChatResult {
-  content: string;
-  usage: ChatUsage;
-}
-
-export async function chat(
-  client: { baseUrl: string; apiKey?: string },
-  options: ChatOptions
-): Promise<ChatResult> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (client.apiKey) headers['Authorization'] = `Bearer ${client.apiKey}`;
-
-  const response = await fetch(`${client.baseUrl}/v1/chat/completions`, {
-    method: 'POST',
-    headers,
-    signal: options.signal,
-    body: JSON.stringify({
-      model: stripProviderPrefix(options.model),
-      messages: options.messages,
-      temperature: options.temperature ?? 0.7,
-      max_tokens: options.maxTokens ?? 4096,
-      stream: false,
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text().catch(() => response.statusText);
-    throw new Error(`Ollama chat error: ${error}`);
-  }
-
-  const data = await response.json();
-  return {
-    content: data.choices?.[0]?.message?.content ?? '',
-    usage: {
-      inputTokens: data.usage?.prompt_tokens ?? 0,
-      outputTokens: data.usage?.completion_tokens ?? 0,
-    },
-  };
-}
-
-export async function* chatStream(
-  client: { baseUrl: string; apiKey?: string },
-  options: ChatOptions
-): AsyncGenerator<string, void, unknown> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (client.apiKey) headers['Authorization'] = `Bearer ${client.apiKey}`;
-
-  const response = await fetch(`${client.baseUrl}/v1/chat/completions`, {
-    method: 'POST',
-    headers,
-    signal: options.signal,
-    body: JSON.stringify({
-      model: stripProviderPrefix(options.model),
-      messages: options.messages,
-      temperature: options.temperature ?? 0.7,
-      max_tokens: options.maxTokens ?? 4096,
-      stream: true,
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text().catch(() => response.statusText);
-    throw new Error(`Ollama stream error: ${error}`);
-  }
-
-  if (!response.body) throw new Error('No response body');
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n').filter(line => line.trim());
-      for (const line of lines) {
-        const dataLine = line.startsWith('data: ') ? line.slice(6) : line;
-        if (dataLine === '[DONE]') continue;
-        try {
-          const data = JSON.parse(dataLine);
-          const content = data.choices?.[0]?.delta?.content;
-          if (content) yield content;
-        } catch (err) {
-          console.debug(`[pi-ollama] Stream parse error: ${err}`);
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
 }

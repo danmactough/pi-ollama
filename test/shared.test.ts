@@ -10,15 +10,12 @@ import os from "node:os";
 import path from "node:path";
 import {
   loadConfigFromEnv,
-  loadConfigFromSettingsFiles,
+  loadConfigFromModelsJson,
   createClients,
-  getClientForModel,
-  getModelName,
   getContextLength,
   hasVisionCapability,
   hasReasoningCapability,
   DEFAULT_CONFIG,
-  type OllamaConfig,
 } from "../src/shared.ts";
 
 describe("shared.ts - OpenAI Compatible Utilities", () => {
@@ -26,58 +23,67 @@ describe("shared.ts - OpenAI Compatible Utilities", () => {
     test("loadConfigFromEnv returns partial config", () => {
       const config = loadConfigFromEnv();
       expect(typeof config).toBe("object");
-      // Config should be empty when no env vars are set
-      // (Tests can't set env vars, so this tests the default behavior)
       expect(Object.keys(config).length).toBeGreaterThanOrEqual(0);
     });
 
-    test("loadConfigFromSettingsFiles reads global and project settings", () => {
-      const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ollama-home-"));
-      const tempProject = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ollama-project-"));
-
-      const oldHome = process.env.HOME;
-      const oldCwd = process.cwd();
+    test("loadConfigFromEnv normalizes provider urls", () => {
+      const oldHost = process.env.OLLAMA_HOST;
+      const oldCloudHost = process.env.OLLAMA_HOST_CLOUD;
 
       try {
-        fs.mkdirSync(path.join(tempHome, ".pi", "agent"), { recursive: true });
-        fs.mkdirSync(path.join(tempProject, ".pi"), { recursive: true });
+        process.env.OLLAMA_HOST = "http://local:11434/v1/";
+        process.env.OLLAMA_HOST_CLOUD = "https://cloud.example/v1/";
 
-        fs.writeFileSync(
-          path.join(tempHome, ".pi", "agent", "settings.json"),
-          JSON.stringify({
-            ollama: {
-              baseUrl: "http://global:11434",
-              cloudUrl: "https://global.example",
-              apiKey: "global-key",
-            },
-          })
-        );
-
-        fs.writeFileSync(
-          path.join(tempProject, ".pi", "settings.json"),
-          JSON.stringify({
-            ollama: {
-              apiKey: "project-key",
-            },
-          })
-        );
-
-        process.env.HOME = tempHome;
-        process.chdir(tempProject);
-
-        const config = loadConfigFromSettingsFiles();
-        expect(config.baseUrl).toBe("http://global:11434");
-        expect(config.cloudUrl).toBe("https://global.example");
-        expect(config.apiKey).toBe("project-key");
+        const config = loadConfigFromEnv();
+        expect(config.baseUrl).toBe("http://local:11434");
+        expect(config.cloudUrl).toBe("https://cloud.example");
       } finally {
-        process.chdir(oldCwd);
-        if (oldHome === undefined) {
-          delete process.env.HOME;
+        if (oldHost === undefined) {
+          delete process.env.OLLAMA_HOST;
         } else {
-          process.env.HOME = oldHome;
+          process.env.OLLAMA_HOST = oldHost;
         }
-        fs.rmSync(tempHome, { recursive: true, force: true });
-        fs.rmSync(tempProject, { recursive: true, force: true });
+        if (oldCloudHost === undefined) {
+          delete process.env.OLLAMA_HOST_CLOUD;
+        } else {
+          process.env.OLLAMA_HOST_CLOUD = oldCloudHost;
+        }
+      }
+    });
+
+    test("loadConfigFromModelsJson reads both provider configs", () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ollama-models-"));
+      const oldEnv = process.env.PI_CODING_AGENT_DIR;
+
+      try {
+        process.env.PI_CODING_AGENT_DIR = tempDir;
+
+        fs.writeFileSync(
+          path.join(tempDir, "models.json"),
+          JSON.stringify({
+            providers: {
+              ollama: {
+                baseUrl: "http://local:11434/v1",
+                api: "openai-completions",
+                apiKey: "local-key",
+              },
+              "ollama-cloud": {
+                baseUrl: "https://cloud.example/v1",
+                api: "openai-completions",
+                apiKey: "cloud-key",
+              },
+            },
+          })
+        );
+
+        const config = loadConfigFromModelsJson();
+        expect(config.baseUrl).toBe("http://local:11434");
+        expect(config.cloudUrl).toBe("https://cloud.example");
+        expect(config.apiKey).toBe("local-key");
+        expect(config.cloudApiKey).toBe("cloud-key");
+      } finally {
+        process.env.PI_CODING_AGENT_DIR = oldEnv;
+        fs.rmSync(tempDir, { recursive: true, force: true });
       }
     });
 
@@ -87,14 +93,25 @@ describe("shared.ts - OpenAI Compatible Utilities", () => {
       expect(clients.cloud).toBeNull();
     });
 
-    test("createClients with API key creates cloud client", () => {
+    test("createClients uses cloudApiKey for cloud client", () => {
       const clients = createClients({
         baseUrl: "http://localhost:11434",
         cloudUrl: "https://ollama.com",
-        apiKey: "test-key",
+        apiKey: "shared-key",
+        cloudApiKey: "cloud-only-key",
       });
       expect(clients.cloud).not.toBeNull();
       expect(clients.local).toBeDefined();
+    });
+
+    test("createClients falls back to apiKey when cloudApiKey empty", () => {
+      const clients = createClients({
+        baseUrl: "http://localhost:11434",
+        cloudUrl: "https://ollama.com",
+        apiKey: "shared-key",
+        cloudApiKey: "",
+      });
+      expect(clients.cloud).not.toBeNull();
     });
 
     test("createClients without API key has no cloud client", () => {
@@ -104,37 +121,6 @@ describe("shared.ts - OpenAI Compatible Utilities", () => {
         apiKey: "",
       });
       expect(clients.cloud).toBeNull();
-    });
-  });
-
-  describe("Model Name Handling", () => {
-    test("getModelName strips :cloud suffix", () => {
-      expect(getModelName("llama3:cloud")).toBe("llama3");
-      expect(getModelName("llama3")).toBe("llama3");
-    });
-
-    test("getClientForModel returns local client", () => {
-      const clients = createClients(DEFAULT_CONFIG);
-      const result = getClientForModel("llama3", clients);
-      expect(result).toBe(clients.local);
-    });
-
-    test("getClientForModel returns local for regular models", () => {
-      const clients = createClients({ apiKey: "test" });
-      const result = getClientForModel("llama3", clients);
-      expect(result).toBe(clients.local);
-    });
-
-    test("getClientForModel returns cloud for :cloud models when available", () => {
-      const clients = createClients({ apiKey: "test" });
-      const result = getClientForModel("llama3:cloud", clients);
-      expect(result).toBe(clients.cloud);
-    });
-
-    test("getClientForModel falls back to local if no cloud client", () => {
-      const clients = createClients(DEFAULT_CONFIG); // No API key
-      const result = getClientForModel("llama3:cloud", clients);
-      expect(result).toBe(clients.local);
     });
   });
 

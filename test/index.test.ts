@@ -1,158 +1,98 @@
 /**
  * Pi Ollama Extension Tests
- * 
- * Tests for Ollama integration with /api/show support
- * @version 0.1.0
  */
 
-import { test, expect, describe, beforeEach, afterEach } from "bun:test";
+import { test, expect, describe } from "bun:test";
+import {
+  fetchModelDetails,
+  getContextLength,
+  hasVisionCapability,
+} from "../src/shared.ts";
 
-describe("pi-ollama v0.1.0", () => {
+describe("pi-ollama", () => {
   describe("Model Info Extraction", () => {
-    test("should extract context length from gemma3", async () => {
-      const { getContextLength } = await import("../src/index.ts");
-
-      const gemma3Info: any = {
-        "gemma3.context_length": 131072,
-        "general.architecture": "gemma3",
-      };
-
-      const contextLength = getContextLength(gemma3Info);
-      expect(contextLength).toBe(131072);
+    test("extracts context length from architecture-specific keys", () => {
+      expect(getContextLength({ "gemma3.context_length": 131072 })).toBe(131072);
+      expect(getContextLength({ "llama.context_length": 8192 })).toBe(8192);
     });
 
-    test("should extract context length from llama", async () => {
-      const { getContextLength } = await import("../src/index.ts");
-
-      const llamaInfo: any = {
-        "llama.context_length": 8192,
-        "general.architecture": "llama",
-      };
-
-      const contextLength = getContextLength(llamaInfo);
-      expect(contextLength).toBe(8192);
+    test("falls back to general context_length", () => {
+      expect(getContextLength({ context_length: 4096 })).toBe(4096);
     });
 
-    test("should fallback to general context_length", async () => {
-      const { getContextLength } = await import("../src/index.ts");
-
-      const genericInfo: any = {
-        "context_length": 4096,
-      };
-
-      const contextLength = getContextLength(genericInfo);
-      expect(contextLength).toBe(4096);
+    test("falls back to 4096 for unknown models", () => {
+      expect(getContextLength({})).toBe(4096);
     });
 
-    test("should fallback to 4096 for unknown models", async () => {
-      const { getContextLength } = await import("../src/index.ts");
-
-      const unknownInfo: any = {};
-
-      const contextLength = getContextLength(unknownInfo);
-      expect(contextLength).toBe(4096); // conservative default
+    test("detects vision capability", () => {
+      expect(
+        hasVisionCapability({
+          model_info: {
+            "general.architecture": "llava",
+            "clip.has_vision_encoder": true,
+          },
+        } as any)
+      ).toBe(true);
     });
 
-    test("should detect vision capability", async () => {
-      const { hasVisionCapability } = await import("../src/index.ts");
-
-      const visionModel = {
-        model_info: {
-          "general.architecture": "llava",
-          "clip.has_vision_encoder": true,
-        },
-      };
-
-      expect(hasVisionCapability(visionModel as any)).toBe(true);
-    });
-
-    test("should detect no vision for text-only models", async () => {
-      const { hasVisionCapability } = await import("../src/index.ts");
-
-      const textModel = {
-        model_info: {
-          "general.architecture": "llama",
-        },
-      };
-
-      expect(hasVisionCapability(textModel as any)).toBe(false);
+    test("detects no vision for text-only models", () => {
+      expect(
+        hasVisionCapability({
+          model_info: {
+            "general.architecture": "llama",
+          },
+        } as any)
+      ).toBe(false);
     });
   });
 
   describe("Extension Registration", () => {
-    test("should load without errors", async () => {
+    test("loads without errors", async () => {
       const { default: ollamaExt } = await import("../src/index.ts");
       const mockPi = {
-        registerCommand: () => { /* mock */ },
-        registerTool: () => { /* mock */ },
-        registerProvider: () => { /* mock */ },
-        on: () => { /* mock */ },
-        settings: { get: () => undefined },
+        registerCommand: () => {},
+        registerTool: () => {},
+        registerProvider: () => {},
+        on: () => {},
       };
-      
+
       ollamaExt(mockPi as any);
       expect(true).toBe(true);
     });
 
-    test("should register commands", async () => {
+    test("registers commands", async () => {
       const commands: string[] = [];
       const mockPi = {
         registerCommand: (name: string) => commands.push(name),
-        registerTool: () => { /* mock */ },
-        registerProvider: () => { /* mock */ },
-        on: () => { /* mock */ },
-        settings: { get: () => undefined },
+        registerTool: () => {},
+        registerProvider: () => {},
+        on: () => {},
       };
-      
+
       const { default: ollamaExt } = await import("../src/index.ts");
       ollamaExt(mockPi as any);
-      
-      expect(commands.length).toBeGreaterThan(1);
+
+      expect(commands).toEqual(["ollama-status", "ollama-info", "ollama-models", "ollama"]);
     });
   });
 
   describe("Configuration", () => {
-    test("should have default localhost URL", async () => {
+    test("handles missing config gracefully", async () => {
       const { default: ollamaExt } = await import("../src/index.ts");
       const mockPi = {
-        registerCommand: () => { /* mock */ },
-        registerTool: () => { /* mock */ },
-        registerProvider: () => { /* mock */ },
-        on: () => { /* mock */ },
-        settings: { 
-          get: (key: string) => {
-            if (key === "ollama.baseUrl") return "http://localhost:11434";
-            return undefined;
-          } 
-        },
+        registerCommand: () => {},
+        registerTool: () => {},
+        registerProvider: () => {},
+        on: () => {},
       };
-      
-      ollamaExt(mockPi as any);
-      
-      // Extension should load with default config
-      expect(true).toBe(true);
-    });
 
-    test("should handle missing settings gracefully", async () => {
-      const { default: ollamaExt } = await import("../src/index.ts");
-      const mockPi = {
-        registerCommand: () => { /* mock */ },
-        registerTool: () => { /* mock */ },
-        registerProvider: () => { /* mock */ },
-        on: () => { /* mock */ },
-        settings: { get: () => undefined },
-      };
-      
-      // Should not throw with no settings
       ollamaExt(mockPi as any);
       expect(true).toBe(true);
     });
   });
 
   describe("Model Parsing", () => {
-    test("should handle various model architectures", async () => {
-      const { getContextLength } = await import("../src/index.ts");
-
+    test("handles various model architectures", () => {
       const testCases = [
         { info: { "gemma3.context_length": 32000 }, expected: 32000 },
         { info: { "llama.context_length": 128000 }, expected: 128000 },
@@ -164,114 +104,72 @@ describe("pi-ollama v0.1.0", () => {
         { info: { "deepseek.context_length": 128000 }, expected: 128000 },
         { info: { "claude.context_length": 200000 }, expected: 200000 },
         { info: { "mixtral.context_length": 32768 }, expected: 32768 },
-        { info: {}, name: "kimi-k2.5", expected: 262144 }, // fallback to name
-        { info: {}, name: "unknown-model", expected: 4096 }, // default
+        { info: {}, name: "kimi-k2.5", expected: 262144 },
+        { info: {}, name: "unknown-model", expected: 4096 },
       ];
 
       for (const tc of testCases) {
-        const result = getContextLength(tc.info as any, tc.name);
-        expect(result).toBe(tc.expected);
+        expect(getContextLength(tc.info as any, tc.name)).toBe(tc.expected);
       }
     });
 
-    test("should fallback to name detection for kimi models", async () => {
-      const { getContextLength } = await import("../src/index.ts");
-
-      // Test detection from model name when model_info doesn't have context
-      const result = getContextLength({}, "kimi-k2.5:cloud");
-      // kimi-k2.5 has 262k (262144) context
-      expect(result).toBe(262144);
+    test("falls back to name detection for kimi models", () => {
+      expect(getContextLength({}, "kimi-k2.5:cloud")).toBe(262144);
     });
 
-    test("should detect context_length in unknown keys", async () => {
-      const { getContextLength } = await import("../src/index.ts");
-
-      const customModel = {
-        "custom_model.context_length": 64000,
-      };
-
-      const result = getContextLength(customModel as any);
-      expect(result).toBe(64000);
+    test("detects context_length in unknown keys", () => {
+      expect(getContextLength({ "custom_model.context_length": 64000 } as any)).toBe(64000);
     });
 
-    test("should prefer specific over generic", async () => {
-      const { getContextLength } = await import("../src/index.ts");
-
+    test("prefers specific over generic", () => {
       const model: any = {
-        "context_length": 4096,
+        context_length: 4096,
         "llama.context_length": 8192,
       };
 
-      // Should prefer architecture-specific over generic context_length
-      const result = getContextLength(model);
-      expect(result).toBe(8192);
+      expect(getContextLength(model)).toBe(8192);
     });
   });
 
-  describe("Export Validation", () => {
-    test("should export fetchModelDetails", async () => {
-      const { fetchModelDetails } = await import("../src/index.ts");
+  describe("Shared Exports", () => {
+    test("exports fetchModelDetails", () => {
       expect(typeof fetchModelDetails).toBe("function");
     });
 
-    test("should export getContextLength", async () => {
-      const { getContextLength } = await import("../src/index.ts");
+    test("exports getContextLength", () => {
       expect(typeof getContextLength).toBe("function");
     });
 
-    test("should export hasVisionCapability", async () => {
-      const { hasVisionCapability } = await import("../src/index.ts");
+    test("exports hasVisionCapability", () => {
       expect(typeof hasVisionCapability).toBe("function");
     });
   });
 
   describe("Error Handling", () => {
-    test("should handle null model info gracefully with name fallback", async () => {
-      const { getContextLength } = await import("../src/index.ts");
-
-      // @ts-ignore - testing null handling
-      const result = getContextLength(null, "kimi-k2.5:cloud");
-      expect(result).toBe(262144); // kimi-k2 has 262k context
+    test("handles null model info with name fallback", () => {
+      expect(getContextLength(null, "kimi-k2.5:cloud")).toBe(262144);
     });
 
-    test("should detect kimi from name when model_info empty", async () => {
-      const { getContextLength } = await import("../src/index.ts");
-
-      const emptyInfo = {};
-      const result = getContextLength(emptyInfo, "kimi-k2.5:cloud");
-      expect(result).toBe(262144); // kimi-k2 has 262k context
+    test("detects kimi from name when model_info empty", () => {
+      expect(getContextLength({}, "kimi-k2.5:cloud")).toBe(262144);
     });
 
-    test("should detect minimax from name", async () => {
-      const { getContextLength } = await import("../src/index.ts");
-
-      const emptyInfo = {};
-      const result = getContextLength(emptyInfo, "minimax-m2.5:cloud");
-      expect(result).toBe(204800); // minimax-m2 has 204k context
+    test("detects minimax from name", () => {
+      expect(getContextLength({}, "minimax-m2.5:cloud")).toBe(204800);
     });
 
-    test("should handle undefined model info", async () => {
-      const { getContextLength } = await import("../src/index.ts");
-
-      // @ts-ignore - testing null handling
-      const result = getContextLength(undefined);
-      expect(result).toBe(4096); // default fallback
+    test("handles undefined model info", () => {
+      expect(getContextLength(undefined)).toBe(4096);
     });
 
-    test("should handle malformed model info", async () => {
-      const { getContextLength, hasVisionCapability } = await import("../src/index.ts");
-
+    test("handles malformed model info", () => {
       const malformed: any = {
         "gemma3.context_length": "not-a-number",
-        "general.architecture": 12345, // Should be string
+        "general.architecture": 12345,
       };
 
-      // Should not throw
-      const contextLength = getContextLength(malformed);
-      expect(typeof contextLength).toBe("number");
-
-      const vision = hasVisionCapability(malformed);
-      expect(typeof vision).toBe("boolean");
+      expect(typeof getContextLength(malformed)).toBe("number");
+      expect(typeof hasVisionCapability(malformed)).toBe("boolean");
     });
   });
 });
