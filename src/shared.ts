@@ -6,7 +6,7 @@
  */
 
 import { Ollama } from 'ollama';
-import { getAgentDir, ProviderModelConfig } from '@mariozechner/pi-coding-agent';
+import { getAgentDir, ProviderModelConfig } from '@earendil-works/pi-coding-agent';
 import fs from 'node:fs';
 import path from 'node:path';
 
