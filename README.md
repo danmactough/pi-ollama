@@ -4,47 +4,32 @@ Ollama integration for [pi-coding-agent](https://github.com/badlogic/pi-mono) wi
 
 Fork of https://github.com/0xKobold/pi-ollama
 
-## Changelog
-
-### v0.5.0
-
-- **Breaking**: Config now reads provider settings from pi's standard `models.json` and env vars instead of custom `settings.json` keys.
-- Reads `providers.ollama.baseUrl` / `apiKey` for the local endpoint, and `providers.ollama-cloud.baseUrl` / `apiKey` for the cloud endpoint.
-- `ollama-cloud` gets its own `apiKey`; if omitted it falls back to the `ollama` provider's key or `OLLAMA_API_KEY`.
-- Static `models` arrays in `models.json` are ignored — models are always discovered dynamically via `/api/tags`.
-- Provider base URLs are normalized before registration, so trailing `/` and `/v1` don’t double up.
-
-### v0.4.1
-
-- **Fix**: Cloud models now correctly use `/v1` endpoint. Previously, `ollama-cloud` was registered with `baseUrl: "https://ollama.com"`, causing pi to hit `https://ollama.com/chat/completions` (HTML homepage) instead of `https://ollama.com/v1/chat/completions`. This was already fixed for the local provider but was missed when the cloud provider was introduced.
-- **Fix**: Trailing slashes in `cloudUrl` config are now properly stripped before appending `/v1`.
-
 ## Installation
 
 ```bash
 # Via pi CLI
-pi install npm:@0xkobold/pi-ollama
+pi install git:github.com/danmactough/pi-ollama
 
 # Or in pi-config.ts
 {
   extensions: [
-    'npm:@0xkobold/pi-ollama'
+    'git:github.com/danmactough/pi-ollama'
   ]
 }
 
 # Or temporary (testing)
-pi -e npm:@0xkobold/pi-ollama
+pi -e git:github.com/danmactough/pi-ollama
 ```
 
 ## Features
 
 - 🦙 **Local Ollama** - Connect to `localhost:11434` (or custom endpoint)
-- ☁️ **Ollama Cloud** - Separate `ollama-cloud` provider via `models.json`
-- 📊 **Accurate Details** - Uses `/api/show` for real context length
+- ☁️ **Ollama Cloud** - Separate `ollama-cloud` provider
+- 📊 **Accurate Model Details** - Uses `/api/show` for real context length
 - 👁️ **Vision Detection** - Detects vision from capabilities array
 - 🧠 **Reasoning Models** - Auto-detects thought-capable models
 - 🔍 **Model Info** - Query specific model parameters
-- 🔧 **Standard Config** - Uses pi's native `models.json` plus env var overrides
+- 🔧 **Standard Config** - Uses pi's native `auth.json` and `models.json` plus env var overrides
 
 ## Quick Start
 
@@ -52,11 +37,11 @@ pi -e npm:@0xkobold/pi-ollama
 # Check connection
 /ollama-status
 
-# List all models (with accurate context length)
+# List all models
 /ollama-models
 
 # Get detailed info for specific model
-/ollama-info gemma3
+/ollama-info gemma3:27b
 /ollama-info llama3.1:70b
 ```
 
@@ -78,7 +63,7 @@ The extension reads provider config from pi's standard **`models.json`**, querie
 It also uses Ollama's `/api/show` endpoint to get accurate model information:
 
 ```bash
-curl http://localhost:11434/api/show -d '{"model": "gemma3", "verbose": true}'
+curl http://localhost:11434/api/show -d '{"model": "llama3.1:70b", "verbose": true}'
 ```
 
 Response includes:
@@ -92,14 +77,20 @@ Response includes:
 Models are displayed with accurate metadata:
 
 ```
-📍 Local:
-  👁️ gemma3 (131,072 ctx)
-  🧠 codellama:70b (16,384 ctx)
-  llama3.1 (128,000 ctx)
+ 🦙 Available Models
 
-☁️ Cloud:
-  👁️ kimi-k2.5 (262,144 ctx)
-  qwen3 (262,144 ctx)
+ 📍 Local:
+   nomic-embed-text:latest (2,048 ctx)
+   llama3.1:8b (131,072 ctx)
+
+ ☁️ Cloud:
+   ☁️ 👁️ kimi-k2.6 (262,144 ctx)
+   ☁️ qwen3-coder:480b (262,144 ctx)
+   ☁️ qwen3-next:80b (262,144 ctx)
+   ☁️ qwen3-coder-next (262,144 ctx)
+   ☁️ gpt-oss:20b (131,072 ctx)
+   ☁️ 👁️ qwen3-vl:235b-instruct (262,144 ctx)
+   etc...
 ```
 
 **Badges:**
@@ -108,7 +99,7 @@ Models are displayed with accurate metadata:
 - 👁️ Vision-capable
 - 🧠 Reasoning-capable
 
-## Configuration
+## Configuration (optional)
 
 Config is read from pi's standard **`models.json`** with environment-variable overrides.
 
@@ -127,6 +118,8 @@ Add to `~/.pi/agent/models.json`:
     "ollama-cloud": {
       "baseUrl": "https://ollama.com/v1",
       "api": "openai-completions",
+      // API key may be set via env or models.json but the preferred method is
+      // to securely store the api key in auth.json using /login
       "apiKey": "sk-..."
     }
   }
@@ -137,7 +130,7 @@ The extension will:
 1. Read `providers.ollama.baseUrl` as the local endpoint.
 2. Read `providers.ollama.apiKey` as the local API key.
 3. Read `providers.ollama-cloud.baseUrl` as the cloud endpoint.
-4. Read `providers.ollama-cloud.apiKey` as the cloud API key. If omitted, it falls back to `providers.ollama.apiKey` or `OLLAMA_API_KEY`.
+4. Read `auth.json[ollama-cloud]` as the cloud API key. If omitted, falls back to `providers.ollama-cloud.apiKey`.
 5. Query **both** endpoints dynamically for available models via `/api/tags`.
 6. Register `ollama` and `ollama-cloud` providers independently.
 
@@ -148,14 +141,13 @@ The extension will:
 ```bash
 export OLLAMA_HOST="http://localhost:11434"      # overrides baseUrl
 export OLLAMA_HOST_CLOUD="https://ollama.com"    # overrides cloudUrl
-export OLLAMA_API_KEY="sk-..."                   # overrides apiKey
-export OLLAMA_API_KEY_CLOUD="sk-..."             # overrides cloudApiKey
+export OLLAMA_API_KEY="sk-..."                   # overrides apiKey for ollama-cloud
 ```
 
 ## Local Development
 
 ```bash
-git clone https://github.com/0xKobold/pi-ollama
+git clone https://github.com/danmactough/pi-ollama
 cd pi-ollama
 npm install
 npm run build
@@ -165,7 +157,7 @@ pi install ./
 ## API Functions
 
 ```typescript
-import { fetchModelDetails, getContextLength, hasVisionCapability } from '@0xkobold/pi-ollama';
+import { fetchModelDetails, getContextLength, hasVisionCapability } from '@danmactough/pi-ollama';
 
 // Get model details
 const details = await fetchModelDetails('gemma3', 'http://localhost:11434');
@@ -186,4 +178,4 @@ The extension detects:
 
 ## License
 
-MIT © 0xKobold
+MIT © 0xKobold, Dan MacTough

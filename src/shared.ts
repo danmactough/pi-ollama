@@ -13,7 +13,6 @@ import path from 'node:path';
 export interface OllamaConfig {
   baseUrl: string;
   cloudUrl: string;
-  apiKey: string;
   cloudApiKey: string;
 }
 
@@ -49,19 +48,16 @@ export interface ModelDetails {
 export const DEFAULT_CONFIG: OllamaConfig = {
   baseUrl: "http://localhost:11434",
   cloudUrl: "https://ollama.com",
-  apiKey: "",
-  cloudApiKey: "",
+  cloudApiKey: "ollama",
 };
 
 /**
  * Create Ollama clients from config.
+ * Only used for model info, so auth is not required.
  */
 export function createClients(config: OllamaConfig): OllamaClients {
   const localClient = new Ollama({ host: config.baseUrl });
-  const cloudKey = config.cloudApiKey || config.apiKey;
-  const cloudClient = cloudKey
-    ? new Ollama({ host: config.cloudUrl, headers: { Authorization: `Bearer ${cloudKey}` } })
-    : null;
+  const cloudClient = new Ollama({ host: config.cloudUrl });
   
   return { local: localClient, cloud: cloudClient };
 }
@@ -140,10 +136,7 @@ export function loadConfigFromEnv(): Partial<OllamaConfig> {
     config.cloudUrl = formatBaseUrl(process.env.OLLAMA_HOST_CLOUD);
   }
   if (process.env.OLLAMA_API_KEY) {
-    config.apiKey = process.env.OLLAMA_API_KEY;
-  }
-  if (process.env.OLLAMA_API_KEY_CLOUD) {
-    config.cloudApiKey = process.env.OLLAMA_API_KEY_CLOUD;
+    config.cloudApiKey = process.env.OLLAMA_API_KEY;
   }
 
   return config;
@@ -157,10 +150,7 @@ export function loadConfigFromModelsJson(): Partial<OllamaConfig> {
   const config: Partial<OllamaConfig> = {};
 
   try {
-    const agentDir = process.env.PI_CODING_AGENT_DIR
-      ? path.resolve(process.env.PI_CODING_AGENT_DIR)
-      : getAgentDir();
-    const modelsPath = path.join(agentDir, 'models.json');
+    const modelsPath = path.join(getAgentDir(), 'models.json');
 
     if (!fs.existsSync(modelsPath)) return config;
     const raw = fs.readFileSync(modelsPath, 'utf8');
@@ -172,7 +162,6 @@ export function loadConfigFromModelsJson(): Partial<OllamaConfig> {
 
     if (localProvider && typeof localProvider === 'object') {
       if (typeof localProvider.baseUrl === 'string') config.baseUrl = formatBaseUrl(localProvider.baseUrl);
-      if (typeof localProvider.apiKey === 'string') config.apiKey = localProvider.apiKey;
     }
 
     if (cloudProvider && typeof cloudProvider === 'object') {
@@ -186,19 +175,16 @@ export function loadConfigFromModelsJson(): Partial<OllamaConfig> {
   return config;
 }
 
+/**
+ * Load configuration by merging defaults, file config, and environment variables.
+ */
 export function loadConfig(): OllamaConfig {
-  let config = { ...DEFAULT_CONFIG };
-
   const fileConfig = loadConfigFromModelsJson();
-  if (fileConfig.baseUrl) config.baseUrl = fileConfig.baseUrl;
-  if (fileConfig.cloudUrl) config.cloudUrl = fileConfig.cloudUrl;
-  if (fileConfig.apiKey) config.apiKey = fileConfig.apiKey;
-
-  // Environment override (highest priority)
   const envConfig = loadConfigFromEnv();
-  config = { ...config, ...envConfig };
+  const config = { ...DEFAULT_CONFIG, ...fileConfig, ...envConfig };
   return config;
 }
+
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================

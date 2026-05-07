@@ -39,7 +39,7 @@ function initializeState(): OllamaExtensionState {
 async function handleStatus(state: OllamaExtensionState, ctx: ExtensionCommandContext) {
   const { clients, config } = state;
   const hasLocal = await isLocalRunning(clients.local);
-  const hasCloudKey = !!(config.cloudApiKey || config.apiKey);
+  const hasCloudKey = !!(config.cloudApiKey || ctx.modelRegistry.authStorage.getApiKey('ollama-cloud'));
 
   const lines = [
     '🦙 Ollama Status',
@@ -145,7 +145,7 @@ async function handleModels(pi: ExtensionAPI, state: OllamaExtensionState, ctx?:
   if (cloudModels.length > 0 && state.clients.cloud) {
     pi.registerProvider('ollama-cloud', {
       baseUrl: `${state.config.cloudUrl}/v1`,
-      apiKey: state.config.cloudApiKey || state.config.apiKey,
+      apiKey: state.config.cloudApiKey, // API key may be set via env or pi models.json or may use an arbitrary string to securely store the api key in auth.json using /login
       api: 'openai-completions',
       models: cloudModels,
     });
