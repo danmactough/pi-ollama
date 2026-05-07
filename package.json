@@ -1,5 +1,5 @@
 {
-  "name": "@0xkobold/pi-ollama",
+  "name": "@danmactough/pi-ollama",
   "version": "0.4.1",
   "description": "Ollama extension for pi-coding-agent. Unified local + cloud Ollama support with model management",
   "keywords": [
@@ -8,33 +8,16 @@
     "llm",
     "local-ai"
   ],
-  "author": "0xKobold",
+  "author": "Dan MacTough <danmactough@gmail.com>",
   "license": "MIT",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    },
-    "./shared": {
-      "import": "./dist/shared.js",
-      "types": "./dist/shared.d.ts"
-    }
-  },
-  "files": [
-    "dist/",
-    "README.md"
-  ],
   "scripts": {
-    "clean": "rm -rf dist",
-    "build": "bun run clean && tsc",
-    "dev": "tsc --watch",
-    "test": "bun test",
-    "prepublishOnly": "bun run build"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "pi": {
-    "extensions": ["./dist/index.js"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": ">=0.65.2",
@@ -43,12 +26,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/0xKobold/pi-ollama"
+    "url": "https://github.com/danmactough/pi-ollama"
   },
   "bugs": {
-    "url": "https://github.com/0xKobold/pi-ollama/issues"
+    "url": "https://github.com/danmactough/pi-ollama/issues"
   },
-  "homepage": "https://github.com/0xKobold/pi-ollama#readme",
+  "homepage": "https://github.com/danmactough/pi-ollama#readme",
   "devDependencies": {
     "typescript": "^6.0.3"
   }

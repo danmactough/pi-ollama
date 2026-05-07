@@ -2,6 +2,8 @@
 
 Ollama integration for [pi-coding-agent](https://github.com/badlogic/pi-mono) with accurate model details from `/api/show`.
 
+Fork of https://github.com/0xKobold/pi-ollama
+
 ## Changelog
 
 ### v0.5.0
