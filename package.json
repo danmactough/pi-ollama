@@ -1,6 +1,6 @@
 {
   "name": "@danmactough/pi-ollama",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Ollama extension for pi-coding-agent. Unified local + cloud Ollama support with model management",
   "keywords": [
     "pi-package",
